@@ -5,8 +5,13 @@ import pygame.freetype
 from dataclasses import dataclass
 from enum import Enum
 from pygame import Surface
+from threading import Thread
+from operator import attrgetter
 
 
+# TODO: sound effects, dragging pieces, checks 
+# TODO: Castling, checks, legal moves, clock, (networks options ? )
+# TODO: later: minimax algorithm, opening knowledge
 class PIECE_COLOR(Enum):
     WHITE = 0
     BLACK = 1
@@ -22,7 +27,11 @@ class PIECES_LETTERS(Enum):
 
 
 pygame.init()
+pygame.mixer.init()
 myfont = pygame.font.SysFont("Arial", 80)
+
+# SOUNDS
+MOVE_SOUND = pygame.mixer.Sound("move_sound.mp3")
 RUNNING = True
 MOVING_PIECE = False  # Move this perhaps to a class in the future
 WHITE = (255, 255, 255)
@@ -80,36 +89,38 @@ BLACK_QUEEN = pygame.transform.scale(BLACK_QUEEN,
                                      (int(BLACK_QUEEN.get_width() * 0.25), int(BLACK_QUEEN.get_height() * 0.25)))
 
 
-def generate_pieces(given_board) -> "List[Piece]":
-    pieces: List[Piece] = list()
-    pieces.append(King(given_board, (7, 4), PIECE_COLOR.WHITE))  # WHITE KING
-    pieces.append(King(given_board, (0, 4), PIECE_COLOR.BLACK))  # BLACK KING
+def generate_pieces(given_board) -> "Tuple[List[Piece], List[Piece]]":
+    white_pieces: List[Piece] = list()
+    black_pieces: List[Piece] = list()
 
-    pieces.append(Queen(given_board, (7, 3), PIECE_COLOR.WHITE))  # WHITE QUEEN
-    pieces.append(Queen(given_board, (0, 3), PIECE_COLOR.BLACK))  # BLACK QUEEN
+    white_pieces.append(King(given_board, (7, 4), PIECE_COLOR.WHITE))  # WHITE KING
+    black_pieces.append(King(given_board, (0, 4), PIECE_COLOR.BLACK))  # BLACK KING
 
-    pieces.append(Rook(given_board, (7, 7), PIECE_COLOR.WHITE))  # RIGHT WHITE ROOK
-    pieces.append(Rook(given_board, (7, 0), PIECE_COLOR.WHITE))  # LEFT WHITE ROOK
-    pieces.append(Rook(given_board, (0, 7), PIECE_COLOR.BLACK))  # RIGHT BLACK ROOK
-    pieces.append(Rook(given_board, (0, 0), PIECE_COLOR.BLACK))  # LEFT BLACK ROOK
+    white_pieces.append(Queen(given_board, (7, 3), PIECE_COLOR.WHITE))  # WHITE QUEEN
+    black_pieces.append(Queen(given_board, (0, 3), PIECE_COLOR.BLACK))  # BLACK QUEEN
 
-    pieces.append(Knight(given_board, (7, 6), PIECE_COLOR.WHITE))  # RIGHT WHITE KNIGHT
-    pieces.append(Knight(given_board, (7, 1), PIECE_COLOR.WHITE))  # LEFT WHITE KNIGHT
-    pieces.append(Knight(given_board, (0, 6), PIECE_COLOR.BLACK))  # RIGHT BLACK KNIGHT
-    pieces.append(Knight(given_board, (0, 1), PIECE_COLOR.BLACK))  # LEFT BLACK KNIGHT
+    white_pieces.append(Rook(given_board, (7, 7), PIECE_COLOR.WHITE))  # RIGHT WHITE ROOK
+    white_pieces.append(Rook(given_board, (7, 0), PIECE_COLOR.WHITE))  # LEFT WHITE ROOK
+    black_pieces.append(Rook(given_board, (0, 7), PIECE_COLOR.BLACK))  # RIGHT BLACK ROOK
+    black_pieces.append(Rook(given_board, (0, 0), PIECE_COLOR.BLACK))  # LEFT BLACK ROOK
 
-    pieces.append(Bishop(given_board, (7, 5), PIECE_COLOR.WHITE))  # RIGHT WHITE BISHOP
-    pieces.append(Bishop(given_board, (7, 2), PIECE_COLOR.WHITE))  # LEFT WHITE BISHOP
-    pieces.append(Bishop(given_board, (0, 5), PIECE_COLOR.BLACK))  # RIGHT BLACK BISHOP
-    pieces.append(Bishop(given_board, (0, 2), PIECE_COLOR.BLACK))  # LEFT BLACK BISHOP
+    white_pieces.append(Knight(given_board, (7, 6), PIECE_COLOR.WHITE))  # RIGHT WHITE KNIGHT
+    white_pieces.append(Knight(given_board, (7, 1), PIECE_COLOR.WHITE))  # LEFT WHITE KNIGHT
+    black_pieces.append(Knight(given_board, (0, 6), PIECE_COLOR.BLACK))  # RIGHT BLACK KNIGHT
+    black_pieces.append(Knight(given_board, (0, 1), PIECE_COLOR.BLACK))  # LEFT BLACK KNIGHT
+
+    white_pieces.append(Bishop(given_board, (7, 5), PIECE_COLOR.WHITE))  # RIGHT WHITE BISHOP
+    white_pieces.append(Bishop(given_board, (7, 2), PIECE_COLOR.WHITE))  # LEFT WHITE BISHOP
+    black_pieces.append(Bishop(given_board, (0, 5), PIECE_COLOR.BLACK))  # RIGHT BLACK BISHOP
+    black_pieces.append(Bishop(given_board, (0, 2), PIECE_COLOR.BLACK))  # LEFT BLACK BISHOP
 
     for column_index in range(8):  # Adding white pawns
-        pieces.append(Pawn(given_board, (6, column_index), PIECE_COLOR.WHITE))
+        white_pieces.append(Pawn(given_board, (6, column_index), PIECE_COLOR.WHITE))
 
     for column_index in range(8):  # Adding black pawns
-        pieces.append(Pawn(given_board, (1, column_index), PIECE_COLOR.BLACK))
+        black_pieces.append(Pawn(given_board, (1, column_index), PIECE_COLOR.BLACK))
 
-    return pieces
+    return white_pieces, black_pieces
 
 
 def point_in_rect(point: Tuple[float, float], rectangle: pygame.Rect) -> bool:
@@ -119,12 +130,14 @@ def point_in_rect(point: Tuple[float, float], rectangle: pygame.Rect) -> bool:
 
 class Page:
     def __init__(self, width: int, height: int, title: Optional[str] = "My Page",
-                 background_color: Tuple[int, int, int] = (230, 230, 230)):
+                 background_color: Tuple[int, int, int] = (230, 230, 230), FPS: int = 60):
         self._width = width
         self._height = height
         self._title = title
         self._background_color = background_color
         self._window = pygame.display.set_mode((width, height))
+        self._clock = pygame.time.Clock()
+        self._FPS = FPS
         pygame.display.set_caption(self._title)
         self._window.fill(background_color)
         pygame.display.update()
@@ -144,6 +157,18 @@ class Page:
     @property
     def background(self):
         return self._background_color
+
+    @property
+    def clock(self):
+        return self._clock
+
+    @property
+    def FPS(self):
+        return self._FPS
+
+
+class BackgroundTask:  # TODO: implement it ?
+    pass
 
 
 class VisualObject(ABC):
@@ -166,6 +191,119 @@ class VisualObject(ABC):
     @abstractmethod
     def draw(self):
         pass
+
+
+class AnimationSpeed(Enum):
+    INSTANT = 0,
+    SLOW = 2
+    MEDIUM = 5
+    FAST = 10
+
+
+class EvaluationBar(VisualObject):
+    def __init__(self, page: Page, rectangle: pygame.Rect, min_number: float = -5, max_number: float = 5,
+                 current_value: float = 0):
+        self._white_rectangle = pygame.Rect(rectangle.x, rectangle.y + rectangle.height / 2, rectangle.width,
+                                            rectangle.height / 2)
+        self._black_rectangle = pygame.Rect(rectangle.x, rectangle.y, rectangle.width, rectangle.height / 2)
+        self._page = page
+        self._overall_rectangle = rectangle
+        self._min, self._max = min_number, max_number
+        self._current_value = current_value
+
+    def draw(self):
+        pygame.draw.rect(self._page.window, WHITE, self._white_rectangle)
+        pygame.draw.rect(self._page.window, BLACK, self._black_rectangle)
+        pygame.display.update(self._white_rectangle)
+        pygame.display.update(self._black_rectangle)
+
+    def clear(self):
+        pygame.draw.rect(self._page.window, self._page.background, self._overall_rectangle)
+        pygame.display.update(self._overall_rectangle)
+
+    def get_moved_rectangles(self, height_difference: float):
+        white_rectangle = pygame.Rect(self._white_rectangle.x,
+                                      self._white_rectangle.y - height_difference,
+                                      self._white_rectangle.width,
+                                      self._white_rectangle.height + height_difference)
+
+        black_rectangle = pygame.Rect(self._black_rectangle.x, self._black_rectangle.y,
+                                      self._black_rectangle.width,
+                                      self._black_rectangle.height - height_difference)
+
+        return white_rectangle, black_rectangle
+
+    def _instant_move(self, height_difference: float):
+        self.clear()
+        self._white_rectangle, self._black_rectangle = self.get_moved_rectangles(height_difference)
+        self.draw()
+
+    def _gradual_move(self, height_difference: float, speed: AnimationSpeed = AnimationSpeed.SLOW) -> None:
+        white_y_target = self._white_rectangle.y - height_difference
+        if height_difference == 0:
+            return
+        elif height_difference > 0:  # WHITE MOVING UP, BLACK MOVING DOWN
+            animation_finished = lambda white_rect, black_rect: white_rect.y < white_y_target
+            towards_white = 1
+        else:
+            animation_finished = lambda white_rect, black_rect: white_rect.y > white_y_target
+            towards_white = -1
+
+        while not animation_finished(self._white_rectangle, self._black_rectangle):
+            self._instant_move(speed.value * towards_white)
+            self._page.clock.tick(self._page.FPS)
+
+    def gradual_move_by_distance(self, height_difference: float, speed: AnimationSpeed = AnimationSpeed.MEDIUM) -> None:
+        bar_moving_thread = Thread(target=self._gradual_move, args=(height_difference, speed))
+        bar_moving_thread.start()
+
+    def _move_by_distance(self, height_difference: float,
+                          animation_speed: Optional[AnimationSpeed] = AnimationSpeed.MEDIUM):
+        # Black = negative, White: Positive
+        if animation_speed is AnimationSpeed.INSTANT:
+            self._instant_move(height_difference)
+        else:
+            self.gradual_move_by_distance(height_difference=height_difference, speed=animation_speed)
+
+    def points_to_distance(self, points: float):
+        return self._white_rectangle.height / self._max * points
+
+    def validate_eval_value(self, eval_value: float):
+        if eval_value > self._max:
+            return self._max
+        elif eval_value < self._min:
+            return self._min
+        return eval_value
+
+    def move(self, points: float, animation_speed: Optional[AnimationSpeed] = AnimationSpeed.MEDIUM):
+        self._current_value += self.validate_eval_value(eval_value=points)
+        self._move_by_distance(self.points_to_distance(points), animation_speed=animation_speed)
+
+    def move_to_position(self, eval_number: float, animation_speed: AnimationSpeed = AnimationSpeed.MEDIUM):
+        self.move(eval_number - self._current_value, animation_speed=animation_speed)
+
+    def reset(self):
+        self.move_to_position(0)
+
+    @property
+    def screen(self):
+        return self._page.window
+
+    @property
+    def x(self):
+        return self._black_rectangle.x
+
+    @property
+    def y(self):
+        return self._black_rectangle.y
+
+    @property
+    def black_rectangle(self):
+        return self._black_rectangle
+
+    @property
+    def white_rectangle(self):
+        return self._white_rectangle
 
 
 @dataclass
@@ -272,7 +410,7 @@ class Square(VisualObject):
         if self._current_piece is not None:
             self._current_piece.draw()
 
-        pygame.display.update()
+        pygame.display.update(self._rectangle)
 
     def occupy(self, chess_piece: "Piece"):
         chess_piece.row, chess_piece.column = self._row_index, self._column_index
@@ -292,23 +430,7 @@ class Square(VisualObject):
         self.change_color(HIGHLIGHTED_SQUARE_COLOR)
 
     def on_left_click(self):
-        print('pressed left click !')
         self.change_color(CHOSEN_SQUARE_COLOR)
-        if not self.is_free:
-            for possible_square in self._current_piece.possible_squares():
-                possible_square.change_color(CHOSEN_SQUARE_COLOR)
-            if game_handler.current_move.chosen_piece is None:
-                print("chose a piece !")
-                game_handler.set_chosen_piece(self._current_piece)
-            else:
-                game_handler.set_destination_square(self)
-                game_handler.execute_move()  # Won't execute if it's not valid!
-        elif game_handler.current_move.chosen_piece is not None:
-            print("moving the piece !")
-            game_handler.set_destination_square(self)
-            game_handler.execute_move()
-        else:
-            print("Clear everything !")
 
     @property
     def right_square(self) -> "Optional[Square]":
@@ -542,6 +664,7 @@ class Move:
                  chosen_square: "Optional[Square]" = None, move_turn: PIECE_COLOR = PIECE_COLOR.WHITE):
         self._board = board
         self._chosen_piece = chosen_piece
+        self._source_square = chosen_piece.square if chosen_piece is not None else None
         self._destination_square = chosen_square
         self._types = None
         self._move_turn = move_turn
@@ -561,6 +684,12 @@ class Move:
     @chosen_piece.setter
     def chosen_piece(self, chosen_piece: "Piece"):
         self._chosen_piece = chosen_piece
+        if chosen_piece is not None:
+            self._source_square = self._chosen_piece.square
+
+    @property
+    def source_square(self):
+        return self._source_square
 
     @property
     def destination_square(self):
@@ -595,9 +724,66 @@ class Move:
             return f"{self._chosen_piece.__str__()}X{self._destination_square.__str__()}"
 
 
+class PieceHandler:
+    def __init__(self, existing_pieces: "Tuple[List[Piece],List[Piece]]", captured_pieces: "Tuple[List[Piece],"
+                                                                                           "List[Piece]]" = (
+            list(), list())):
+        self._existing_pieces = existing_pieces
+        self._captured_pieces = captured_pieces
+
+    @property
+    def existing_pieces(self):
+        return self._existing_pieces
+
+    @property
+    def captured_pieces(self):
+        return self._captured_pieces
+
+    def add_piece(self, piece: "Piece"):
+        self._existing_pieces[piece.color.value].append(
+            piece)  # Enum value is either 0 or 1, so it'll match the indices
+
+    def remove_piece(self, piece: "Piece"):  # TODO: check if this works
+        self._existing_pieces[piece.color.value].remove(piece)
+
+    def add_captured_piece(self, piece: "Piece"):
+        self._captured_pieces[piece.color.value].append(piece)
+
+    def remove_captured_piece(self, piece: "Piece"):
+        self._captured_pieces[piece.color.value].append(piece)
+
+    def white_points_sum(self):
+        return sum(piece.value for piece in self._existing_pieces[0])
+
+    def black_points_sum(self):
+        return sum(piece.value for piece in self._existing_pieces[1])
+
+    def material_evaluation(self):
+        return self.white_points_sum() - self.black_points_sum()
+
+    def white_king_in_check(self):
+        for black_piece in self._existing_pieces[1]:
+            if isinstance(black_piece, King):  # A king cannot deliver a check
+                continue
+            for possible_square in black_piece.possible_squares():
+                if isinstance(possible_square.current_piece,
+                              King) and possible_square.current_piece.color is PIECE_COLOR.WHITE:
+                    return True
+        return False
+
+    def black_king_in_check(self):
+        for white_piece in self._existing_pieces[0]:
+            if isinstance(white_piece, King):  # A king cannot deliver a check
+                continue
+            for possible_square in white_piece.possible_squares():
+                if isinstance(possible_square.current_piece,
+                              King) and possible_square.current_piece.color is PIECE_COLOR.BLACK:
+                    return True
+        return False
+
+
 class GameHandler:
     def __init__(self, board: "Board"):
-        print("Creating a new game handler")
         self._board = board
         self._current_turn = PIECE_COLOR.WHITE
         self._current_move = Move(board)
@@ -636,8 +822,9 @@ class GameHandler:
 
     def execute_move(self):
         if self._current_move.is_valid():
-            print("executing move ...")
             self._current_move.execute()
+            current_move_evaluation: float = piece_handler.material_evaluation()
+            evaluation_bar.move_to_position(current_move_evaluation)
             self.shift_turns()
             self._moves.append(self._current_move)
             self._current_move = Move(board=self._board)
@@ -646,6 +833,23 @@ class GameHandler:
 
     def shift_turns(self):
         self._current_turn = PIECE_COLOR.BLACK if self._current_turn == PIECE_COLOR.WHITE else PIECE_COLOR.WHITE
+
+    def on_left_click(self, square_clicked: "Square"):
+        square_clicked.on_left_click()
+        if not square_clicked.is_free:
+            self._board.highlight_possible_squares(square_clicked.current_piece)
+            if self.current_move.chosen_piece is None:  # If a piece wasn't chosen yet, then choose it
+                print(
+                    f"BLACK KING: {piece_handler.black_king_in_check()}, WHITE KING: {piece_handler.white_king_in_check()}")
+                self.set_chosen_piece(square_clicked.current_piece)
+            else:
+                self.set_destination_square(square_clicked)
+                self.execute_move()  # Won't execute if it's not valid!
+        elif self.current_move.chosen_piece is not None:
+            self.set_destination_square(square_clicked)
+            self.execute_move()
+        else:
+            print("Whoops")
 
 
 class Board:
@@ -681,22 +885,6 @@ class Board:
                     row_index=row_index,
                     column_index=column_index
                 )
-
-    def static_evaluation(self) -> float:
-        """
-        Gives a static evaluation of which side has the advantage, by counting the points of the pieces
-        of each side
-        """
-        white_sum, black_sum = 0, 0
-        for row in self._squares:
-            for square in row:
-                if not square.is_free:
-                    if square.current_piece.color == PIECE_COLOR.WHITE:
-                        white_sum += square.current_piece.value
-                    else:
-                        black_sum += square.current_piece.value
-        return white_sum - black_sum
-
 
     @property
     def screen(self):
@@ -741,6 +929,10 @@ class Board:
 
     def valid_column_index(self, column_index: int) -> bool:
         return 0 <= column_index < self.num_of_columns
+
+    def highlight_possible_squares(self, piece: "Piece"):
+        for possible_square in piece.possible_squares():
+            possible_square.change_color(CHOSEN_SQUARE_COLOR)
 
 
 class Button:
@@ -804,18 +996,23 @@ class Piece(VisualObject):
         y = self._square.y + (self._square.height - self._image.get_rect().height) // 2
 
         self._board.screen.blit(self._image, (x, y))
-        pygame.display.update()
+        pygame.display.update(self._square.rectangle)
 
     def possible_squares(self):
         pass
 
+    def on_capture(self, piece_captured: "Piece"):  # What to do when capturing a piece
+        piece_handler.remove_piece(piece_captured)
+        piece_handler.add_captured_piece(piece_captured)
+
     def move(self, destination_square: Square):
+        if not destination_square.is_free:  # If the square is not free, then we are capturing something !
+            self.on_capture(destination_square.current_piece)
         self._square.free()
         self._row, self._column = destination_square.row_index, destination_square.column_index
         self._square = destination_square
         destination_square.occupy(self)
         self.draw()
-        pygame.display.update()
 
     def can_capture(self, other_piece: "Piece") -> bool:
         return not isinstance(other_piece, King) and self._color != other_piece._color
@@ -1076,16 +1273,6 @@ class Pawn(Piece):
         return self._possible_squares
 
 
-main_page = Page(1100, 900, "Chess Engine V1.0")
-main_board = Board(main_page.window, pygame.Rect(165, 60, 780, 780), colors=(WHITE, BROWN))
-pieces = generate_pieces(main_board)
-main_board.draw()
-
-game_handler = GameHandler(
-    board=main_board
-)
-
-
 def square_clicked(board: Board, coordinate: Tuple[float, float]) -> Optional[Tuple[Square, Tuple[int, int]]]:
     for row_index, row in enumerate(board.squares_matrix):
         for column_index, square in enumerate(row):
@@ -1099,6 +1286,22 @@ def clicked_in_board(board: Board, coordinate: Tuple[float, float]):
     return point_in_rect(coordinate, board.rectangle)
 
 
+main_page = Page(1100, 900, "Chess Engine V1.0")
+main_board = Board(main_page.window, pygame.Rect(165, 60, 780, 780), colors=(WHITE, BROWN))
+pieces = generate_pieces(main_board)
+piece_handler = PieceHandler(
+    existing_pieces=pieces
+)
+evaluation_bar = EvaluationBar(main_page, pygame.Rect(main_page.width * 0.87, main_board.squares_matrix[0][0].y,
+                                                      main_page.width * 0.07, main_board.height))
+main_board.draw()
+evaluation_bar.draw()
+
+game_handler = GameHandler(
+    board=main_board
+)
+
+
 def main():
     global RUNNING
     global MOVING_PIECE
@@ -1107,7 +1310,7 @@ def main():
             if event.type == pygame.QUIT:
                 RUNNING = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                print(f"Eval Bar: {main_board.static_evaluation()}")
+
                 x, y = pygame.mouse.get_pos()
                 if event.button == 1:  # LEFT CLICK
                     if clicked_in_board(main_board, (x, y)):
@@ -1117,7 +1320,8 @@ def main():
                             if result[0].color == CHOSEN_SQUARE_COLOR:
                                 result[0].restore_color()
                             else:
-                                result[0].on_left_click()
+                                game_handler.on_left_click(result[0])
+
 
                 elif event.button == 3:  # RIGHT CLICK
                     if clicked_in_board(main_board, (x, y)):
@@ -1127,7 +1331,8 @@ def main():
                                 result[0].restore_color()
                             else:
                                 result[0].on_right_click()
-
+            elif event.type == pygame.MOUSEBUTTONUP:
+                MOVE_SOUND.play()
 
 if __name__ == '__main__':
     main()
