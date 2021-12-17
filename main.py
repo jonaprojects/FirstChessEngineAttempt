@@ -7,9 +7,10 @@ from enum import Enum
 from pygame import Surface
 from threading import Thread
 from operator import attrgetter
+from functools import partial
 
 
-# TODO: sound effects, dragging pieces, checks 
+# TODO: sound effects, dragging pieces, checks
 # TODO: Castling, checks, legal moves, clock, (networks options ? )
 # TODO: later: minimax algorithm, opening knowledge
 class PIECE_COLOR(Enum):
@@ -31,7 +32,11 @@ pygame.mixer.init()
 myfont = pygame.font.SysFont("Arial", 80)
 
 # SOUNDS
+GAME_START = pygame.mixer.Sound("game_start_sound.mp3")
 MOVE_SOUND = pygame.mixer.Sound("move_sound.mp3")
+CAPTURE_SOUND = pygame.mixer.Sound("capture_sound.mp3")
+CASTLING_SOUND = pygame.mixer.Sound("castle_sound.mp3")
+
 RUNNING = True
 MOVING_PIECE = False  # Move this perhaps to a class in the future
 WHITE = (255, 255, 255)
@@ -201,7 +206,7 @@ class AnimationSpeed(Enum):
 
 
 class EvaluationBar(VisualObject):
-    def __init__(self, page: Page, rectangle: pygame.Rect, min_number: float = -5, max_number: float = 5,
+    def __init__(self, page: Page, rectangle: pygame.Rect, min_number: float = -10, max_number: float = 10,
                  current_value: float = 0):
         self._white_rectangle = pygame.Rect(rectangle.x, rectangle.y + rectangle.height / 2, rectangle.width,
                                             rectangle.height / 2)
@@ -401,6 +406,13 @@ class Square(VisualObject):
     def current_piece(self):
         return self._current_piece
 
+    @current_piece.setter
+    def current_piece(self, new_piece: "Optional[Piece]"):
+        self._current_piece = new_piece
+
+    def disattach_current_piece(self):
+        self._current_piece = None
+
     def restore_color(self):
         self._color = self._original_color
         self.draw()
@@ -536,27 +548,49 @@ class Square(VisualObject):
         if not self.has_diagonal_up_left():
             return []
         current_square = self.diagonal_up_left
-        free_squares.append(current_square)
         while current_square is not None and current_square.is_free:
             free_squares.append(current_square)
             current_square = current_square.diagonal_up_left
         if current_square is not None:  # Diagonal getting blocked
-            if self._current_piece.can_capture(current_square._current_piece):
-                free_squares.append(current_square)
+            free_squares.append(current_square)
         return free_squares
+
+    def legal_wrapper(self, given_method):
+        if self._current_piece is None:  # This method is only relevant regarding to the piece
+            return None
+        possible_squares = given_method()
+        if not possible_squares:
+            return []
+        last_square = possible_squares[-1]
+        if possible_squares[-1].is_free:
+            return possible_squares
+        return possible_squares if self._current_piece.can_capture(last_square.current_piece) else possible_squares[:-1]
+
+    def legal_up_left_diagonal(self) -> "List[Optional[Square]]":
+        return self.legal_wrapper(self.full_diagonal_up_left)
+
+    def legal_up_right_diagonal(self) -> "List[Optional[Square]]":
+        return self.legal_wrapper(self.full_diagonal_up_right)
+
+    def legal_down_left_diagonal(self) -> "List[Optional[Square]]":
+        return self.legal_wrapper(self.full_diagonal_down_left)
+
+    def legal_down_right_diagonal(self) -> "List[Optional[Square]]":
+        return self.legal_wrapper(self.full_diagonal_down_right)
+
+    def all_legal_diagonals(self) -> "List[Optional[Square]]":
+        return self.legal_up_left_diagonal() + self.legal_up_right_diagonal() + self.legal_down_left_diagonal() + self.legal_down_right_diagonal()
 
     def full_diagonal_up_right(self):
         if not self.has_diagonal_up_right():
             return []
         free_squares = []
         current_square = self.diagonal_up_right
-        free_squares.append(current_square)
         while current_square is not None and current_square.is_free:
             free_squares.append(current_square)
             current_square = current_square.diagonal_up_right
         if current_square is not None:  # Diagonal getting blocked
-            if self._current_piece.can_capture(current_square._current_piece):
-                free_squares.append(current_square)
+            free_squares.append(current_square)
         return free_squares
 
     def full_diagonal_down_left(self):
@@ -564,12 +598,11 @@ class Square(VisualObject):
             return []
         free_squares = []
         current_square = self.diagonal_down_left
-        free_squares.append(current_square)
         while current_square is not None and current_square.is_free:
             free_squares.append(current_square)
             current_square = current_square.diagonal_down_left
         if current_square is not None:  # Diagonal getting blocked
-            if self._current_piece.can_capture(current_square._current_piece):
+            if current_square is not None:  # Diagonal getting blocked
                 free_squares.append(current_square)
         return free_squares
 
@@ -578,12 +611,11 @@ class Square(VisualObject):
             return []
         free_squares = []
         current_square = self.diagonal_down_right
-        free_squares.append(current_square)
         while current_square is not None and current_square.is_free:
             free_squares.append(current_square)
             current_square = current_square.diagonal_down_right
         if current_square is not None:  # Diagonal getting blocked
-            if self._current_piece.can_capture(current_square._current_piece):
+            if current_square is not None:  # Diagonal getting blocked
                 free_squares.append(current_square)
         return free_squares
 
@@ -591,19 +623,25 @@ class Square(VisualObject):
         return self.full_diagonal_up_left() + self.full_diagonal_up_right() + self.full_diagonal_down_left() + self.full_diagonal_down_right()
 
     # FREE ROWS AND COLUMNS
-
-    def free_squares_in_row(self, row_index: int):
+    def free_squares_in_row_left(self, row_index: int):
         free_squares: List[Square] = list()
         for column_index in range(self._column_index - 1, -1, -1):
             # Stop checking when the row is blocked, because it is not accessible from there
             square = self._board.squares_matrix[row_index][column_index]
             if square.is_free:
                 free_squares.append(square)
-            elif not square.is_free and self._current_piece.can_capture(square._current_piece):
+            elif not square.is_free:
                 free_squares.append(square)
                 break
             else:
                 break
+        return free_squares
+
+    def legal_squares_in_row_left(self, row_index: int):
+        return self.legal_wrapper(partial(self.free_squares_in_row_left, row_index))
+
+    def free_squares_in_row_right(self, row_index: int):
+        free_squares: List[Square] = list()
         for column_index in range(self._column_index + 1, self._board.num_of_columns, 1):
             square = self._board.squares_matrix[row_index][column_index]
             if square.is_free:
@@ -613,32 +651,50 @@ class Square(VisualObject):
                 break
             else:
                 break
-
         return free_squares
 
-    def free_squares_in_column(self, column_index: int):
-        free_squares = []
+    def free_squares_in_row(self, row_index: int):
+        return self.free_squares_in_row_left(row_index) + self.free_squares_in_row_right(row_index)
+
+    def legal_squares_in_row_right(self, row_index: int):
+        return self.legal_wrapper(partial(self.free_squares_in_row_right, row_index))
+
+    def legal_squares_in_row(self, row_index: int):
+        return self.legal_squares_in_row_left(row_index) + self.legal_squares_in_row_right(row_index)
+
+    def free_squares_in_column_up(self, column_index: int):
+        free_squares: List[Optional[Square]] = list()
         for row_index in range(self._row_index - 1, -1, -1):
             square = self._board.squares_matrix[row_index][column_index]
-            if square.is_free:
-                free_squares.append(square)
-            elif not square.is_free and self._current_piece.can_capture(square._current_piece):
-                free_squares.append(square)
+            free_squares.append(square)
+            if not square.is_free:
                 break
-            else:
-                break
+        return free_squares
 
+    def legal_squares_in_column_up(self, column_index: int):
+        return self.legal_wrapper(partial(self.free_squares_in_column, column_index))
+
+    def free_squares_in_column_down(self, column_index: int):
+        free_squares: List[Optional[Square]] = list()
         for row_index in range(self._row_index + 1, self._board.num_of_rows, 1):
             square = self._board.squares_matrix[row_index][column_index]
             if square.is_free:
                 free_squares.append(square)
-            elif not square.is_free and self._current_piece.can_capture(square._current_piece):
+            elif not square.is_free:
                 free_squares.append(square)
                 break
             else:
                 break
-
         return free_squares
+
+    def legal_squares_in_column_down(self, column_index: int):
+        return self.legal_wrapper(partial(self.free_squares_in_column_down, column_index))
+
+    def free_squares_in_column(self, column_index: int):
+        return self.free_squares_in_column_up(column_index) + self.free_squares_in_column_down(column_index)
+
+    def legal_squares_in_column(self, column_index: int):
+        return self.legal_squares_in_column_down(column_index) + self.legal_squares_in_column_up(column_index)
 
     @property
     def real_row(self):
@@ -660,13 +716,15 @@ class MoveTypes(Enum):
 
 
 class Move:
-    def __init__(self, board: "Board", chosen_piece: "Optional[Piece]" = None,
+    def __init__(self, board: "Board", chosen_piece: "Optional[Piece]" = None, source_square: "Optional[Square]" = None,
                  chosen_square: "Optional[Square]" = None, move_turn: PIECE_COLOR = PIECE_COLOR.WHITE):
         self._board = board
         self._chosen_piece = chosen_piece
-        self._source_square = chosen_piece.square if chosen_piece is not None else None
+        self._source_square = source_square if source_square is not None else (
+            None if chosen_piece is None else chosen_piece.square
+        )
         self._destination_square = chosen_square
-        self._types = None
+        self._types = []
         self._move_turn = move_turn
 
     @property
@@ -691,6 +749,10 @@ class Move:
     def source_square(self):
         return self._source_square
 
+    @source_square.setter
+    def source_square(self, source_square: "Optional[Square]"):
+        self._source_square = source_square
+
     @property
     def destination_square(self):
         return self._destination_square
@@ -700,13 +762,22 @@ class Move:
         self._destination_square = destination_square
 
     def determine_types(self):
-        self._types = []
         if self.is_valid():
             if not self._destination_square.is_free:  # Either a capture, or also a check and a mate
                 self._types.append(MoveTypes.CAPTURE)
             else:
                 self._types.append(MoveTypes.REGULAR)
             # TODO: here check whether it's also a check or a mate or so on
+        return self._types
+
+    @property
+    def classifications(self):
+        if self._types:
+            return self._types
+        return self.determine_types()
+
+    def add_classification(self, new_type: MoveTypes):
+        self._types.append(new_type)
 
     def is_valid(self) -> bool:  # TODO: check somewhere whether the move is legal
         if self._destination_square is None or self._chosen_piece is None:
@@ -716,6 +787,9 @@ class Move:
     def execute(self):
         if self.is_valid():
             self._chosen_piece.move(self._destination_square)
+
+    def erase_data(self):
+        self._source_square, self._destination_square, self._chosen_piece = None, None, None
 
     def __str__(self):
         if MoveTypes.REGULAR in self._types:
@@ -744,7 +818,10 @@ class PieceHandler:
             piece)  # Enum value is either 0 or 1, so it'll match the indices
 
     def remove_piece(self, piece: "Piece"):  # TODO: check if this works
-        self._existing_pieces[piece.color.value].remove(piece)
+        try:
+            self._existing_pieces[piece.color.value].remove(piece)
+        except:
+            return None
 
     def add_captured_piece(self, piece: "Piece"):
         self._captured_pieces[piece.color.value].append(piece)
@@ -765,7 +842,7 @@ class PieceHandler:
         for black_piece in self._existing_pieces[1]:
             if isinstance(black_piece, King):  # A king cannot deliver a check
                 continue
-            for possible_square in black_piece.possible_squares():
+            for possible_square in black_piece.all_squares():
                 if isinstance(possible_square.current_piece,
                               King) and possible_square.current_piece.color is PIECE_COLOR.WHITE:
                     return True
@@ -775,7 +852,7 @@ class PieceHandler:
         for white_piece in self._existing_pieces[0]:
             if isinstance(white_piece, King):  # A king cannot deliver a check
                 continue
-            for possible_square in white_piece.possible_squares():
+            for possible_square in white_piece.all_squares():
                 if isinstance(possible_square.current_piece,
                               King) and possible_square.current_piece.color is PIECE_COLOR.BLACK:
                     return True
@@ -811,25 +888,36 @@ class GameHandler:
     def set_chosen_piece(self, chosen_piece: "Piece"):
         if chosen_piece.color == self._current_turn:
             self._current_move.chosen_piece = chosen_piece
+        else:
+            self._current_move.erase_data()
 
     def set_destination_square(self, destination_square: Square):
         if destination_square in self._current_move.chosen_piece.possible_squares():
             self._current_move.destination_square = destination_square
         else:
-            print("illegal move!")
-            self._current_move.chosen_piece = None
-            self._current_move.destination_square = None
+            self._current_move.erase_data()
 
     def execute_move(self):
         if self._current_move.is_valid():
+            if MoveTypes.CHECK in self._current_move.classifications:
+                pass
+                print("Check isn't implemented yet !")
+            elif MoveTypes.CAPTURE in self._current_move.classifications:
+                CAPTURE_SOUND.play()
+            else:
+                MOVE_SOUND.play()
             self._current_move.execute()
             current_move_evaluation: float = piece_handler.material_evaluation()
             evaluation_bar.move_to_position(current_move_evaluation)
             self.shift_turns()
             self._moves.append(self._current_move)
             self._current_move = Move(board=self._board)
+            print(f"white inside execute_move:{piece_handler.white_points_sum()}")
         else:
-            print("invalid move ...")
+            self._current_move.source_square = None
+            self._current_move.chosen_piece = None
+            self._current_move.destination_square = None
+            print("Illegal move ")
 
     def shift_turns(self):
         self._current_turn = PIECE_COLOR.BLACK if self._current_turn == PIECE_COLOR.WHITE else PIECE_COLOR.WHITE
@@ -886,6 +974,9 @@ class Board:
                     column_index=column_index
                 )
 
+    def load_fen_position(self, fen_position):
+        pass
+
     @property
     def screen(self):
         return self._screen
@@ -935,6 +1026,86 @@ class Board:
             possible_square.change_color(CHOSEN_SQUARE_COLOR)
 
 
+def valid_chess_position(chess_position: str) -> bool:
+    if len(chess_position) != 2:
+        return False
+    chess_position: str = chess_position.lower()
+    if not 'a' <= chess_position[0] <= 'h':
+        return False
+    if not '1' <= chess_position[1] <= '8':
+        return False
+    return True
+
+
+@dataclass
+class ChessSquareNotation:
+    _column: str
+    _row: int
+
+    def matrix_position_from_black(self):
+        pass
+
+    def matrix_position_from_white(self):
+        pass
+
+
+class FEN:
+    """
+    The FEN Notation is a short string that represents a position of a chess game.
+    It contains 6 fields separated by spaces, and it can be loaded into a board.
+    """
+
+    @staticmethod
+    def analyze_piece_placement(piece_placement: str):
+        pass
+
+    @staticmethod
+    def analyze_side_to_move(side_to_move: str) -> PIECE_COLOR:
+        if side_to_move == 'w':
+            return PIECE_COLOR.WHITE
+        elif side_to_move == 'b':
+            return PIECE_COLOR.BLACK
+        else:
+            raise ValueError(f"Invalid side_to_move field in FEN Notation: {side_to_move}. Expected 'w' or 'b'. ")
+
+    @staticmethod
+    def analyze_castling_ability(castling_ability: str) -> List[bool]:
+        can_castle = [False, False, False, False]
+        if castling_ability == '-':
+            return can_castle
+        string_length = len(castling_ability)
+        if not 0 < string_length <= 4:
+            raise ValueError(f"Invalid castling ability field in FEN Notation: {castling_ability}.")
+        if 'K' in castling_ability:
+            can_castle[0] = True
+        if 'Q' in castling_ability:
+            can_castle[1] = True
+        if 'k' in castling_ability:
+            can_castle[2] = True
+        if 'q' in castling_ability:
+            can_castle[3] = True
+        return can_castle
+
+    @staticmethod
+    def analyze_en_passent(en_passent: str):
+        if en_passent == '-':
+            return None
+        if not valid_chess_position(en_passent):
+            raise ValueError(f"Invalid en passent field in FEN Notation: {en_passent}")
+        return ChessSquareNotation(en_passent[0], int(en_passent[1]))
+
+    @staticmethod
+    def analyze_halfmove_clock():
+        pass
+
+    @staticmethod
+    def analyze_fullmove_counter():
+        pass
+
+    def __init__(self, fen_string: str):
+        pass
+
+
 class Button:
     def __init__(self, screen: Union[Surface, pygame.Surface], rectangle: pygame.Rect, text: str = "",
                  on_click: Callable = None):
@@ -952,6 +1123,9 @@ class Piece(VisualObject):
         self._row, self._column = location
         self._square: Square = board.squares_matrix[self._row][self._column]
         self._image = image
+        self.moving = False
+        self._x = self._square.x + (self._square.width - self._image.get_rect().width) / 2
+        self._y = self._square.y + (self._square.height - self._image.get_rect().height) / 2
         self._square.occupy(self)
         self._possible_squares = None
 
@@ -964,16 +1138,23 @@ class Piece(VisualObject):
         return self._square
 
     @square.setter
+    def square(self, new_square: "Square"):
+        if new_square is not None:
+            self._square = new_square
+            self._row, self._column = new_square.row_index, new_square.column_index
+            self.update_coordinates()
+
+    @square.setter
     def square(self, new_square: Square):
         self._square = new_square
 
     @property
     def x(self):
-        return self._square.x
+        return self._x
 
     @property
     def y(self):
-        return self._square.y
+        return self._y
 
     @property
     def color(self):
@@ -991,14 +1172,27 @@ class Piece(VisualObject):
     def value(self):
         return self._value
 
-    def draw(self):
-        x = self._square.x + (self._square.width - self._image.get_rect().width) // 2
-        y = self._square.y + (self._square.height - self._image.get_rect().height) // 2
+    @property
+    def image_rect(self):
+        return self._image.get_rect()
 
-        self._board.screen.blit(self._image, (x, y))
-        pygame.display.update(self._square.rectangle)
+    def update_coordinates(self):
+        if self._square is not None:
+            self._x = self._square.x + (self._square.width - self._image.get_rect().width) / 2
+            self._y = self._square.y + (self._square.height - self._image.get_rect().height) / 2
+
+    def draw(self):
+
+        self._board.screen.blit(self._image, (self._x, self._y))
+        if not self.moving:  # if the piece is inside a square, update the square only
+            pygame.display.update(self._square.rectangle)
+        else:  # Otherwise, update the whole screen
+            pygame.display.update(self._board.rectangle)
 
     def possible_squares(self):
+        pass
+
+    def all_squares(self):
         pass
 
     def on_capture(self, piece_captured: "Piece"):  # What to do when capturing a piece
@@ -1006,16 +1200,25 @@ class Piece(VisualObject):
         piece_handler.add_captured_piece(piece_captured)
 
     def move(self, destination_square: Square):
-        if not destination_square.is_free:  # If the square is not free, then we are capturing something !
+        self.moving = False
+        if not destination_square.is_free and destination_square.current_piece is not self:
+            # If the square is not free, then we are capturing something !
             self.on_capture(destination_square.current_piece)
-        self._square.free()
+        if self._square is not None:
+            self._square.free()
         self._row, self._column = destination_square.row_index, destination_square.column_index
         self._square = destination_square
         destination_square.occupy(self)
+        self.update_coordinates()
+        self.draw()
+
+    def move_to_point(self, coordinates: Tuple[float, float]):
+        self.moving = True
+        self._x, self._y = coordinates
         self.draw()
 
     def can_capture(self, other_piece: "Piece") -> bool:
-        return not isinstance(other_piece, King) and self._color != other_piece._color
+        return other_piece is not None and not isinstance(other_piece, King) and self._color != other_piece._color
 
     def __str__(self):
         return "Undefined piece behavior !"
@@ -1044,9 +1247,7 @@ class King(Piece):
                 possible_squares.append(self._square.right_square)
 
         if self._square.has_left():
-            print("checking for left")
             if self._square.left_free() or self.can_capture(self._square.left_square.current_piece):
-                print("checking inside the left")
                 possible_squares.append(self._square.left_square)
 
         if self._square.has_up():
@@ -1130,9 +1331,15 @@ class Queen(Piece):
             image=BLACK_QUEEN if piece_color.value else WHITE_QUEEN
         )
 
-    def possible_squares(self):
+    def all_squares(self):
         possible_squares = self._square.free_squares_in_row(self._row) + self._square.free_squares_in_column(
             self._column) + self._square.full_free_diagonals()
+        self._possible_squares = possible_squares  # TODO: be careful of the memory sharing !
+        return possible_squares
+
+    def possible_squares(self):
+        possible_squares = self._square.free_squares_in_row(self._row) + self._square.free_squares_in_column(
+            self._column) + self._square.all_legal_diagonals()
         self._possible_squares = possible_squares  # TODO: be careful of the memory sharing !
         return possible_squares
 
@@ -1155,9 +1362,13 @@ class Rook(Piece):
     def has_moved(self):
         return self._has_moved
 
+    def all_squares(self):
+        return self._square.free_squares_in_row(self._square.row_index) + self._square.free_squares_in_column(
+            self._square.column_index)
+
     def possible_squares(self):
-        possible_squares = self._square.free_squares_in_row(self._row) + self._square.free_squares_in_column(
-            self._column)
+        possible_squares = self._square.legal_squares_in_row(
+            self._square.row_index) + self._square.legal_squares_in_column(self._square.column_index)
         self._possible_squares = possible_squares  # TODO: be careful of the memory sharing !
         return possible_squares
 
@@ -1179,8 +1390,11 @@ class Bishop(Piece):
             image=BLACK_BISHOP if piece_color.value else WHITE_BISHOP
         )
 
+    def all_squares(self):
+        return self._square.full_free_diagonals()
+
     def possible_squares(self):
-        possible_squares = self._square.full_free_diagonals()
+        possible_squares = self._square.all_legal_diagonals()
         self._possible_squares = possible_squares  # TODO: be careful of the memory sharing !
         return possible_squares
 
@@ -1198,7 +1412,8 @@ class Knight(Piece):
             image=BLACK_KNIGHT if piece_color.value else WHITE_KNIGHT
         )
 
-    def possible_squares(self):
+    def all_squares(self) -> List[Optional[Square]]:
+        """ All the squares that the piece can reach without any rules"""
         possible_positions = []
         possible_indices = (
             (self._row - 2, self._column + 1),
@@ -1214,10 +1429,14 @@ class Knight(Piece):
         for row, column in possible_indices:
             if self._board.valid_row_index(row) and self._board.valid_column_index(column):
                 square = self._board.squares_matrix[row][column]
-                if square.is_free or super(Knight, self).can_capture(square.current_piece):
-                    possible_positions.append(square)
-        self._possible_squares = possible_positions  # TODO: be careful of the memory sharing !
+                possible_positions.append(square)
+
         return possible_positions
+
+    def possible_squares(self):
+        self._possible_squares = [square for square in self.all_squares() if
+                                  super(Knight, self).can_capture(square.current_piece) or square.is_free]
+        return self._possible_squares
 
     def __str__(self):
         return "N"
@@ -1232,6 +1451,20 @@ class Pawn(Piece):
             value=1,
             image=BLACK_PAWN if piece_color.value else WHITE_PAWN
         )
+
+    def all_squares(self):
+        all_squares: List[Optional[Square]] = list()
+        if self._color == PIECE_COLOR.WHITE:
+            if self._square.has_diagonal_up_left():
+                all_squares.append(self._square.diagonal_up_left)
+            if self._square.has_diagonal_up_right():
+                all_squares.append(self._square.diagonal_up_right)
+        else:
+            if self._square.has_diagonal_down_left():
+                all_squares.append(self._square.diagonal_down_left)
+            if self._square.has_diagonal_down_right():
+                all_squares.append(self._square.diagonal_down_right)
+        return all_squares
 
     def possible_captures(self):
         """ Returns a list of squares that the current pawn can capture"""
@@ -1252,12 +1485,13 @@ class Pawn(Piece):
             if self._square.has_diagonal_down_right() and not self._square.diagonal_down_right.is_free and self.can_capture(
                     self._square.diagonal_down_right.current_piece):
                 possible_captures.append(self._square.diagonal_down_right)
-
         return possible_captures
 
     def possible_squares(self) -> List[Square]:
         """ Returns a list of all of the squares that the pawn can go or capture"""
         possible_squares: List[Square] = []
+        if self._square is None:
+            return []
         if self._color == PIECE_COLOR.WHITE:
             if self._square.up_free():  # TODO: later add a check whether it's a legal move !
                 possible_squares.append(self._square.up_square)
@@ -1302,26 +1536,36 @@ game_handler = GameHandler(
 )
 
 
+def look_for_event(desired_event_type, events):
+    return any(event.type == desired_event_type for event in events)
+
+
 def main():
     global RUNNING
     global MOVING_PIECE
+    mouse_left_down = False
+    possible_piece_dragged = None
+    GAME_START.play()
     while RUNNING:
-        for event in pygame.event.get():
+        events = pygame.event.get()
+        for event in events:
             if event.type == pygame.QUIT:
                 RUNNING = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
-
                 x, y = pygame.mouse.get_pos()
                 if event.button == 1:  # LEFT CLICK
+                    print(piece_handler.white_points_sum())
+                    print(piece_handler.black_points_sum())
+                    mouse_left_down = True
                     if clicked_in_board(main_board, (x, y)):
                         main_board.restore_all_colors()
-                        result: Optional[Tuple[Square, Tuple[int, int]]] = square_clicked(main_board, (x, y))
-                        if result is not None:
-                            if result[0].color == CHOSEN_SQUARE_COLOR:
-                                result[0].restore_color()
-                            else:
-                                game_handler.on_left_click(result[0])
-
+                        if not possible_piece_dragged:
+                            result: Optional[Tuple[Square, Tuple[int, int]]] = square_clicked(main_board, (x, y))
+                            if result is not None:
+                                if result[0].color == CHOSEN_SQUARE_COLOR:
+                                    result[0].restore_color()
+                                else:
+                                    game_handler.on_left_click(result[0])
 
                 elif event.button == 3:  # RIGHT CLICK
                     if clicked_in_board(main_board, (x, y)):
@@ -1332,7 +1576,38 @@ def main():
                             else:
                                 result[0].on_right_click()
             elif event.type == pygame.MOUSEBUTTONUP:
-                MOVE_SOUND.play()
+                mouse_left_down = False
+                if possible_piece_dragged is not None:  # If we dragged something
+                    main_board.restore_all_colors()
+                    print(f" sum is {piece_handler.white_points_sum()}")
+                    result: Optional[Tuple[Square, Tuple[int, int]]] = square_clicked(main_board, (
+                        possible_piece_dragged.x, possible_piece_dragged.y))
+                    if result is not None:
+                        game_handler.set_chosen_piece(possible_piece_dragged)
+                        game_handler.set_chosen_piece(possible_piece_dragged)
+                        game_handler.set_destination_square(result[0])
+                        game_handler.execute_move()
+                        possible_piece_dragged.move(result[0])
+                    print(f" sum is {piece_handler.white_points_sum()}")
+
+                    main_board.draw()
+                    possible_piece_dragged = None
+            elif event.type == pygame.MOUSEMOTION:
+                main_board.draw()
+                if mouse_left_down:
+                    if not possible_piece_dragged:  # The first iteration of checking this event when moving a piece
+                        x, y = event.pos
+                        square, location = square_clicked(main_board,
+                                                          (x, y))
+                        if square is not None and not square.is_free and square.current_piece.color == game_handler.current_turn:
+                            possible_piece_dragged = square.current_piece
+
+                    else:
+                        mouse_x, mouse_y = event.pos
+                        possible_piece_dragged.move_to_point((
+                            mouse_x - possible_piece_dragged.image_rect.width / 2,
+                            mouse_y - possible_piece_dragged.image_rect.height / 2))
+
 
 if __name__ == '__main__':
     main()
